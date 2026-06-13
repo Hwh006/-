@@ -4,6 +4,7 @@ This folder contains a minimal fullstack project scaffold:
 
 - `frontend/`: React app built with Vite (Mario prototype game)
 - `backend/`: FastAPI service (SQLite save/continue API)
+- `person_webside/`: Personal website React scaffold (Vite + React Router)
 
 ## Prerequisites
 
