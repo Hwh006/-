@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>Interactive Sticky Note Wall</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { overflow: hidden; background: #1a1a1a; }
+canvas { display: block; }
+#info { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+  color: #fff; font-family: sans-serif; font-size: 13px; opacity: 0.6;
+  pointer-events: none; text-align: center; }
+</style>
+</head>
+<body>
+<div id="info">拖拽便利贴的角来揭起 · Drag a corner to peel</div>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ── Setup ──
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x2a2018);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 0, 8);
+camera.lookAt(0, 0, 0);
+
+// ── Lights ──
+const ambient = new THREE.AmbientLight(0xffeedd, 0.5);
+scene.add(ambient);
+const dirLight = new THREE.DirectionalLight(0xfff5e6, 1.2);
+dirLight.position.set(3, 4, 5);
+dirLight.castShadow = true;
+dirLight.shadow.mapSize.set(1024, 1024);
+scene.add(dirLight);
+const pointLight = new THREE.PointLight(0xffcc88, 0.4, 15);
+pointLight.position.set(-2, 3, 4);
+scene.add(pointLight);
+
+// ── Cork Board ──
+function createCorkTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 512;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#b8956a';
+  ctx.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 8000; i++) {
+    const x = Math.random() * 512, y = Math.random() * 512;
+    const r = Math.random() * 2.5 + 0.3;
+    const brightness = Math.random() * 40 - 20;
+    const base = [184 + brightness, 149 + brightness, 106 + brightness];
+    ctx.fillStyle = `rgb(${base[0]},${base[1]},${base[2]})`;
+    ctx.beginPath(); ctx.ellipse(x, y, r, r * 0.6, Math.random() * Math.PI, 0, Math.PI * 2); ctx.fill();
+  }
+  for (let i = 0; i < 200; i++) {
+    ctx.strokeStyle = `rgba(90,65,40,${Math.random() * 0.08})`;
+    ctx.lineWidth = Math.random() * 0.8;
+    ctx.beginPath();
+    const sx = Math.random() * 512, sy = Math.random() * 512;
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(sx + (Math.random() - 0.5) * 30, sy + (Math.random() - 0.5) * 30);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+function createCorkBump() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 5000; i++) {
+    const v = Math.random() * 60 + 98;
+    ctx.fillStyle = `rgb(${v},${v},${v})`;
+    ctx.beginPath();
+    ctx.arc(Math.random() * 256, Math.random() * 256, Math.random() * 2 + 0.3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+const boardGeo = new THREE.PlaneGeometry(10, 7);
+const boardMat = new THREE.MeshStandardMaterial({
+  map: createCorkTexture(),
+  bumpMap: createCorkBump(),
+  bumpScale: 0.03,
+  roughness: 0.95,
+  metalness: 0.0,
+});
+const board = new THREE.Mesh(boardGeo, boardMat);
+board.receiveShadow = true;
+board.position.z = -0.02;
+scene.add(board);
+
+// Board frame
+const frameMat = new THREE.MeshStandardMaterial({ color: 0x3d2b1f, roughness: 0.7, metalness: 0.1 });
+const frameW = 10.4, frameH = 7.4, frameD = 0.15, frameT = 0.2;
+[
+  [0, frameH/2, 0, frameW + frameT*2, frameT, frameD],
+  [0, -frameH/2, 0, frameW + frameT*2, frameT, frameD],
+  [-frameW/2, 0, 0, frameT, frameH, frameD],
+  [frameW/2, 0, 0, frameT, frameH, frameD],
+].forEach(([x,y,z,w,h,d]) => {
+  const g = new THREE.BoxGeometry(w, h, d);
+  const m = new THREE.Mesh(g, frameMat);
+  m.position.set(x, y, z);
+  scene.add(m);
+});
+
+// ── Sticky Note Colors ──
+const COLORS = [
+  { name: 'yellow', color: 0xfff176, back: 0xe6d85a },
+  { name: 'pink', color: 0xf48fb1, back: 0xd9739a },
+  { name: 'mint', color: 0x80cbc4, back: 0x66b2a8 },
+  { name: 'blue', color: 0x81d4fa, back: 0x64b5d4 },
+  { name: 'purple', color: 0xce93d8, back: 0xb57cc2 },
+];
+
+// ── Sticky Note Class ──
+const NOTE_SIZE = 1.2;
+const GRID_SPACING = 1.6;
+const SEG = 20;
+const GLUE_RATIO = 0.25;
+const PAPER_THICKNESS = 0.012;
+
+class StickyNote {
+  constructor(gridX, gridY, colorInfo) {
+    this.gridX = gridX;
+    this.gridY = gridY;
+    this.colorInfo = colorInfo;
+    this.state = 'stuck'; // stuck, peeling, snapping, falling
+    this.peelCorner = -1; // 0=BL, 1=BR, 2=TL, 3=TR (bottom-left etc but note: top is glue)
+    this.peelAmount = 0;
+    this.peelTarget = 0;
+    this.fallVel = new THREE.Vector3();
+    this.fallRotVel = new THREE.Vector3();
+    this.snapTime = 0;
+    this.snapFrom = 0;
+    this.basePos = new THREE.Vector3(
+      (gridX - 1) * GRID_SPACING,
+      (gridY - 1) * GRID_SPACING + 0.2,
+      0.01
+    );
+    this.entryDone = false;
+    this.entryProgress = 0;
+    this.entryDelay = (2 - gridY) * 0.6 + gridX * 0.2 + Math.random() * 0.3;
+
+    this.group = new THREE.Group();
+    this.group.position.copy(this.basePos);
+    this.group.position.y = 5; // start off screen for entry animation
+
+    this._buildMesh();
+    scene.add(this.group);
+  }
+
+  _buildMesh() {
+    // Front face - subdivided for deformation
+    const frontGeo = new THREE.PlaneGeometry(NOTE_SIZE, NOTE_SIZE, SEG, SEG);
+    const frontMat = new THREE.MeshStandardMaterial({
+      color: this.colorInfo.color,
+      roughness: 0.6,
+      metalness: 0.0,
+      side: THREE.FrontSide,
+    });
+    this.frontMesh = new THREE.Mesh(frontGeo, frontMat);
+    this.frontMesh.castShadow = true;
+    this.frontMesh.receiveShadow = true;
+    this.group.add(this.frontMesh);
+
+    // Back face
+    const backGeo = new THREE.PlaneGeometry(NOTE_SIZE, NOTE_SIZE, SEG, SEG);
+    const backMat = new THREE.MeshStandardMaterial({
+      color: this.colorInfo.back,
+      roughness: 0.7,
+      metalness: 0.0,
+      side: THREE.FrontSide,
+    });
+    this.backMesh = new THREE.Mesh(backGeo, backMat);
+    this.backMesh.rotation.y = Math.PI;
+    this.backMesh.position.z = -PAPER_THICKNESS;
+    this.backMesh.castShadow = true;
+    this.group.add(this.backMesh);
+
+    // Edge strips for paper thickness
+    this.edges = [];
+    const edgeMat = new THREE.MeshStandardMaterial({
+      color: 0xf5f0e8,
+      roughness: 0.5,
+    });
+
+    // We'll create dynamic edge geometry during deformation
+    // For now, add thin bottom/side edges
+    const edgeGeos = [
+      { w: NOTE_SIZE, h: PAPER_THICKNESS, pos: [0, -NOTE_SIZE/2, -PAPER_THICKNESS/2], name: 'bottom' },
+      { w: PAPER_THICKNESS, h: NOTE_SIZE, pos: [-NOTE_SIZE/2, 0, -PAPER_THICKNESS/2], name: 'left' },
+      { w: PAPER_THICKNESS, h: NOTE_SIZE, pos: [NOTE_SIZE/2, 0, -PAPER_THICKNESS/2], name: 'right' },
+      { w: NOTE_SIZE, h: PAPER_THICKNESS, pos: [0, NOTE_SIZE/2, -PAPER_THICKNESS/2], name: 'top' },
+    ];
+    edgeGeos.forEach(e => {
+      const g = new THREE.PlaneGeometry(e.w, e.h, e.name === 'bottom' || e.name === 'top' ? SEG : 1, e.name === 'left' || e.name === 'right' ? SEG : 1);
+      const m = new THREE.Mesh(g, edgeMat);
+      if (e.name === 'bottom') { m.rotation.x = Math.PI / 2; m.position.set(e.pos[0], e.pos[1], e.pos[2]); }
+      else if (e.name === 'top') { m.rotation.x = -Math.PI / 2; m.position.set(e.pos[0], e.pos[1], e.pos[2]); }
+      else if (e.name === 'left') { m.rotation.y = Math.PI / 2; m.position.set(e.pos[0], e.pos[1], e.pos[2]); }
+      else { m.rotation.y = -Math.PI / 2; m.position.set(e.pos[0], e.pos[1], e.pos[2]); }
+      this.edges.push({ mesh: m, name: e.name });
+      this.group.add(m);
+    });
+
+    // Store original positions
+    this.origFrontPos = frontGeo.attributes.position.array.slice();
+    this.origBackPos = backGeo.attributes.position.array.slice();
+
+    // Add pen scribbles
+    this._addScribble();
+  }
+
+  _addScribble() {
+    const c = document.createElement('canvas');
+    c.width = 128; c.height = 128;
+    const ctx = c.getContext('2d');
+    ctx.strokeStyle = `rgba(50,50,50,${0.3 + Math.random()*0.3})`;
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    const lines = 2 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < lines; i++) {
+      const y = 25 + i * 18 + Math.random() * 5;
+      const len = 30 + Math.random() * 70;
+      ctx.beginPath();
+      ctx.moveTo(20, y);
+      for (let x = 20; x < 20 + len; x += 4) {
+        ctx.lineTo(x, y + (Math.random() - 0.5) * 2);
+      }
+      ctx.stroke();
+    }
+    const tex = new THREE.CanvasTexture(c);
+    const scribbleMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+    const scribbleMesh = new THREE.Mesh(new THREE.PlaneGeometry(NOTE_SIZE * 0.9, NOTE_SIZE * 0.9), scribbleMat);
+    scribbleMesh.position.z = 0.001;
+    scribbleMesh.position.y = -NOTE_SIZE * 0.05;
+    this.frontMesh.add(scribbleMesh);
+  }
+
+  getCornerPositions() {
+    const hs = NOTE_SIZE / 2;
+    // corners in local space: 0=BL, 1=BR, 2=TL, 3=TR
+    // But we only allow peeling from bottom corners (0,1) since top is glue
+    return [
+      new THREE.Vector3(-hs, -hs, 0),
+      new THREE.Vector3(hs, -hs, 0),
+      new THREE.Vector3(-hs, hs, 0),
+      new THREE.Vector3(hs, hs, 0),
+    ];
+  }
+
+  getWorldCorners() {
+    return this.getCornerPositions().map(c => c.clone().applyMatrix4(this.group.matrixWorld));
+  }
+
+  hitTestCorner(worldPoint, radius = 0.3) {
+    if (this.state !== 'stuck') return -1;
+    const corners = this.getWorldCorners();
+    // Only allow bottom-left(0), bottom-right(1) corners for peeling
+    for (const i of [0, 1]) {
+      if (corners[i].distanceTo(worldPoint) < radius) return i;
+    }
+    return -1;
+  }
+
+  startPeel(corner) {
+    this.state = 'peeling';
+    this.peelCorner = corner;
+    this.peelAmount = 0;
+  }
+
+  setPeelAmount(amount) {
+    this.peelTarget = Math.max(0, Math.min(1, amount));
+  }
+
+  release() {
+    const peelAngle = this.peelAmount * 180;
+    if (peelAngle < 60) {
+      this.state = 'snapping';
+      this.snapTime = 0;
+      this.snapFrom = this.peelAmount;
+    } else {
+      this.state = 'falling';
+      this.fallVel.set((Math.random() - 0.5) * 0.5, 0, 0.5);
+      this.fallRotVel.set(
+        (Math.random() - 0.5) * 2,
+        (Math.random() - 0.5) * 2,
+        (Math.random() - 0.5) * 1
+      );
+    }
+  }
+
+  _deformMesh(peelAmt) {
+    const frontPos = this.frontMesh.geometry.attributes.position;
+    const backPos = this.backMesh.geometry.attributes.position;
+    const hs = NOTE_SIZE / 2;
+    const glueY = hs - NOTE_SIZE * GLUE_RATIO; // y threshold: above this is glued
+
+    for (let i = 0; i < frontPos.count; i++) {
+      const ox = this.origFrontPos[i * 3];
+      const oy = this.origFrontPos[i * 3 + 1];
+      const oz = this.origFrontPos[i * 3 + 2];
+
+      // Normalize y: 0 at glue line, 1 at bottom edge
+      const distFromGlue = Math.max(0, glueY - oy) / (glueY + hs);
+
+      // Influence based on corner
+      let cornerInfluence = 1;
+      if (this.peelCorner === 0) { // bottom-left
+        cornerInfluence = (1 - (ox + hs) / NOTE_SIZE) * 0.5 + 0.5;
+      } else if (this.peelCorner === 1) { // bottom-right
+        cornerInfluence = ((ox + hs) / NOTE_SIZE) * 0.5 + 0.5;
+      }
+
+      const t = distFromGlue * cornerInfluence * peelAmt;
+      const angle = t * Math.PI * 0.95;
+      const curl = Math.sin(angle) * NOTE_SIZE * 0.4 * peelAmt;
+      const lift = (1 - Math.cos(angle)) * NOTE_SIZE * 0.3 * peelAmt;
+
+      // Additional curl near the grabbed corner
+      const cornerDist = this.peelCorner === 0
+        ? Math.sqrt((ox + hs) ** 2 + (oy + hs) ** 2) / (NOTE_SIZE * 1.414)
+        : Math.sqrt((ox - hs) ** 2 + (oy + hs) ** 2) / (NOTE_SIZE * 1.414);
+      const extraCurl = (1 - cornerDist) * peelAmt * 0.15;
+
+      frontPos.setXYZ(i, ox, oy - curl * 0.1, oz + lift + extraCurl);
+      backPos.setXYZ(i, ox, oy - curl * 0.1, oz - PAPER_THICKNESS + lift + extraCurl);
+    }
+
+    frontPos.needsUpdate = true;
+    backPos.needsUpdate = true;
+    this.frontMesh.geometry.computeVertexNormals();
+    this.backMesh.geometry.computeVertexNormals();
+  }
+
+  _resetMesh() {
+    const frontPos = this.frontMesh.geometry.attributes.position;
+    const backPos = this.backMesh.geometry.attributes.position;
+    for (let i = 0; i < frontPos.count; i++) {
+      frontPos.setXYZ(i, this.origFrontPos[i*3], this.origFrontPos[i*3+1], this.origFrontPos[i*3+2]);
+      backPos.setXYZ(i, this.origBackPos[i*3], this.origBackPos[i*3+1], this.origBackPos[i*3+2] - PAPER_THICKNESS);
+    }
+    frontPos.needsUpdate = true;
+    backPos.needsUpdate = true;
+    this.frontMesh.geometry.computeVertexNormals();
+    this.backMesh.geometry.computeVertexNormals();
+  }
+
+  update(dt) {
+    // Entry animation
+    if (!this.entryDone) {
+      this.entryDelay -= dt;
+      if (this.entryDelay <= 0) {
+        this.entryProgress = Math.min(1, this.entryProgress + dt * 1.2);
+        const t = 1 - Math.pow(1 - this.entryProgress, 3); // ease out cubic
+        this.group.position.y = THREE.MathUtils.lerp(5, this.basePos.y, t);
+        // Slight wobble at end
+        if (this.entryProgress > 0.8) {
+          const wobble = Math.sin((this.entryProgress - 0.8) * 50) * 0.02 * (1 - this.entryProgress) * 5;
+          this.group.position.z = this.basePos.z + wobble;
+        }
+        if (this.entryProgress >= 1) {
+          this.entryDone = true;
+          this.group.position.copy(this.basePos);
+        }
+      }
+      return;
+    }
+
+    if (this.state === 'peeling') {
+      this.peelAmount += (this.peelTarget - this.peelAmount) * 8 * dt;
+      this._deformMesh(this.peelAmount);
+    }
+
+    if (this.state === 'snapping') {
+      this.snapTime += dt;
+      // Damped spring back
+      const dampedT = 1 - Math.exp(-this.snapTime * 6);
+      const wobble = Math.sin(this.snapTime * 25) * Math.exp(-this.snapTime * 8) * 0.05;
+      this.peelAmount = this.snapFrom * (1 - dampedT) + wobble;
+      if (this.peelAmount < 0.001 && this.snapTime > 0.3) {
+        this.peelAmount = 0;
+        this.state = 'stuck';
+        this._resetMesh();
+      } else {
+        this._deformMesh(Math.max(0, this.peelAmount));
+      }
+    }
+
+    if (this.state === 'falling') {
+      // Gravity
+      this.fallVel.y -= 4.0 * dt;
+      // Air resistance - more on edges (flutter)
+      this.fallVel.x += (Math.sin(performance.now() * 0.005 + this.gridX * 3) * 0.8 - this.fallVel.x * 0.5) * dt;
+      this.fallVel.z *= (1 - 1.5 * dt);
+
+      this.group.position.add(this.fallVel.clone().multiplyScalar(dt));
+
+      // Rotation flutter
+      this.group.rotation.x += this.fallRotVel.x * dt;
+      this.group.rotation.y += this.fallRotVel.y * dt;
+      this.group.rotation.z += this.fallRotVel.z * dt;
+      this.fallRotVel.multiplyScalar(1 - 0.5 * dt);
+      this.fallRotVel.x += Math.sin(performance.now() * 0.003) * 1.5 * dt;
+
+      // Floor collision
+      const floorY = -3.2;
+      if (this.group.position.y < floorY) {
+        this.group.position.y = floorY;
+        this.fallVel.y *= -0.2;
+        this.fallVel.x *= 0.5;
+        this.fallRotVel.multiplyScalar(0.3);
+        if (Math.abs(this.fallVel.y) < 0.1) {
+          this.fallVel.set(0, 0, 0);
+          this.fallRotVel.set(0, 0, 0);
+          // Flatten on floor
+          this.group.rotation.x = -Math.PI / 2 * 0.9;
+          this.state = 'grounded';
+        }
+      }
+    }
+  }
+}
+
+// ── Create Notes ──
+const notes = [];
+const shuffledColors = [];
+for (let i = 0; i < 9; i++) shuffledColors.push(COLORS[i % COLORS.length]);
+for (let i = shuffledColors.length - 1; i > 0; i--) {
+  const j = Math.floor(Math.random() * (i + 1));
+  [shuffledColors[i], shuffledColors[j]] = [shuffledColors[j], shuffledColors[i]];
+}
+
+let idx = 0;
+for (let gy = 0; gy < 3; gy++) {
+  for (let gx = 0; gx < 3; gx++) {
+    notes.push(new StickyNote(gx, gy, shuffledColors[idx++]));
+  }
+}
+
+// ── Interaction ──
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+let activeNote = null;
+let dragStart = new THREE.Vector2();
+
+function getWorldPoint(e) {
+  mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+  const pt = new THREE.Vector3();
+  raycaster.ray.intersectPlane(plane, pt);
+  return pt;
+}
+
+renderer.domElement.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return;
+  const wp = getWorldPoint(e);
+  if (!wp) return;
+
+  for (const note of notes) {
+    const corner = note.hitTestCorner(wp, 0.35);
+    if (corner >= 0) {
+      activeNote = note;
+      note.startPeel(corner);
+      dragStart.set(e.clientX, e.clientY);
+      break;
+    }
+  }
+});
+
+renderer.domElement.addEventListener('mousemove', (e) => {
+  if (!activeNote || activeNote.state !== 'peeling') return;
+  const dy = dragStart.y - e.clientY;
+  const dx = Math.abs(e.clientX - dragStart.x);
+  const dist = Math.sqrt(dy * dy + dx * dx);
+  const amount = Math.max(0, dist / 200);
+  activeNote.setPeelAmount(amount);
+});
+
+renderer.domElement.addEventListener('mouseup', () => {
+  if (activeNote && activeNote.state === 'peeling') {
+    activeNote.release();
+    activeNote = null;
+  }
+});
+
+// Touch support
+renderer.domElement.addEventListener('touchstart', (e) => {
+  e.preventDefault();
+  const t = e.touches[0];
+  const fakeE = { clientX: t.clientX, clientY: t.clientY, button: 0 };
+  renderer.domElement.dispatchEvent(new MouseEvent('mousedown', fakeE));
+}, { passive: false });
+
+renderer.domElement.addEventListener('touchmove', (e) => {
+  e.preventDefault();
+  const t = e.touches[0];
+  const fakeE = { clientX: t.clientX, clientY: t.clientY };
+  renderer.domElement.dispatchEvent(new MouseEvent('mousemove', fakeE));
+}, { passive: false });
+
+renderer.domElement.addEventListener('touchend', () => {
+  renderer.domElement.dispatchEvent(new MouseEvent('mouseup'));
+});
+
+// ── Cursor ──
+renderer.domElement.addEventListener('mousemove', (e) => {
+  if (activeNote) {
+    renderer.domElement.style.cursor = 'grabbing';
+    return;
+  }
+  const wp = getWorldPoint(e);
+  if (!wp) return;
+  let onCorner = false;
+  for (const note of notes) {
+    if (note.hitTestCorner(wp, 0.35) >= 0) { onCorner = true; break; }
+  }
+  renderer.domElement.style.cursor = onCorner ? 'grab' : 'default';
+});
+
+// ── Resize ──
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ── Animate ──
+let lastTime = performance.now();
+function animate() {
+  requestAnimationFrame(animate);
+  const now = performance.now();
+  const dt = Math.min((now - lastTime) / 1000, 0.05);
+  lastTime = now;
+
+  notes.forEach(n => n.update(dt));
+
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
